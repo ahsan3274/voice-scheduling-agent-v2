@@ -262,7 +262,7 @@ voice-scheduling-agent-v2/
 
 ## 🎥 Demo Video
 
-[Watch Demo]([https://loom.com/share/your-video-id](https://www.loom.com/share/5a33c06c0d9f4af4b99a101ae86ede7e]) *(coming soon)*
+[Watch Demo](https://www.loom.com/share/5a33c06c0d9f4af4b99a101ae86ede7e](https://www.loom.com/share/5a33c06c0d9f4af4b99a101ae86ede7e) 
 
 ---
 
