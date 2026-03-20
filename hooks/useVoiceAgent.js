@@ -82,7 +82,8 @@ export function useVoiceAgent() {
       // Use AudioContext that was created on user click
       const ctx = audioCtxRef.current;
       if (!ctx) {
-        throw new Error('AudioContext not initialized - please click to start first');
+        console.warn('[speak] AudioContext not initialized, skipping audio playback');
+        return;
       }
 
       // Resume context if suspended (browser policy)
@@ -95,18 +96,14 @@ export function useVoiceAgent() {
       source.buffer = audioBuffer;
       source.connect(ctx.destination);
       
-      return new Promise((resolve, reject) => {
+      await new Promise((resolve, reject) => {
         source.onended = resolve;
         source.onerror = reject;
         source.start(0);
       });
     } catch (err) {
-      console.error('[speak]', err);
-      // Don't fail the flow for audio issues
-      if (!err.message.includes('decode') && !err.message.includes('buffer')) {
-        setErrorMsg(`Audio error: ${err.message}`);
-        setStatus(AGENT_STATUS.ERROR);
-      }
+      console.warn('[speak] Audio playback error (non-fatal):', err.message);
+      // Don't fail the flow for audio issues - continue with text only
     } finally {
       isSpeakingRef.current = false;
     }
@@ -151,7 +148,7 @@ export function useVoiceAgent() {
         addMessage('assistant', confirmText);
         await speakText(confirmText);
         setStatus(AGENT_STATUS.ENDED);
-        stopListening();
+        stopListening('booking-complete');
         return;
       }
 
@@ -266,7 +263,8 @@ export function useVoiceAgent() {
     });
   }
 
-  function stopListening() {
+  function stopListening(caller = 'unknown') {
+    console.log(`[stopListening] Called from: ${caller}`);
     listeningRef.current = false;
 
     // Close Deepgram
@@ -429,13 +427,13 @@ export function useVoiceAgent() {
           : err.message
       );
       setStatus(AGENT_STATUS.ERROR);
-      stopListening();
+      stopListening('startCall-error');
     }
   }, []);
 
   const stopCall = useCallback(() => {
     abortRef.current = true;
-    stopListening();
+    stopListening('stopCall-user');
     setStatus(AGENT_STATUS.ENDED);
     setLiveText('');
   }, []);
@@ -444,7 +442,7 @@ export function useVoiceAgent() {
   useEffect(() => {
     return () => {
       abortRef.current = true;
-      stopListening();
+      stopListening('cleanup-unmount');
       if (audioCtxRef.current) {
         audioCtxRef.current.close();
         audioCtxRef.current = null;
