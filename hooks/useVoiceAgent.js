@@ -180,6 +180,11 @@ export function useVoiceAgent() {
 
   async function startDeepgram() {
     return new Promise((resolve, reject) => {
+      // Timeout after 10 seconds
+      const timeout = setTimeout(() => {
+        reject(new Error('Deepgram connection timeout'));
+      }, 10000);
+
       // Fetch a short-lived key from our server
       fetch('/api/deepgram-token')
         .then(res => {
@@ -196,13 +201,14 @@ export function useVoiceAgent() {
             endpointing: 500,
             interim_results: true,
             utterance_end_ms: 1500,
-            vad_events: true, // Enable voice activity detection events
+            vad_events: true,
           });
 
           let isOpen = false;
 
           connection.on(LiveTranscriptionEvents.Open, () => {
             isOpen = true;
+            clearTimeout(timeout);
             console.log('[Deepgram] connection open - ready to receive audio');
             resolve(connection);
           });
@@ -234,6 +240,7 @@ export function useVoiceAgent() {
 
           connection.on(LiveTranscriptionEvents.Error, (err) => {
             console.error('[Deepgram] error', err);
+            clearTimeout(timeout);
             reject(err);
           });
 
@@ -262,7 +269,10 @@ export function useVoiceAgent() {
             }
           }, 10000);
         })
-        .catch(reject);
+        .catch(err => {
+          clearTimeout(timeout);
+          reject(err);
+        });
     });
   }
 
@@ -357,16 +367,18 @@ export function useVoiceAgent() {
       try {
         await tempAudio.play();
         tempAudio.pause();
+        console.log('[startCall] Audio warmup successful');
       } catch (e) {
-        // Ignore if this fails - we'll try again later
-        console.log('[startCall] Initial audio warmup failed, will retry later');
+        console.log('[startCall] Audio warmup failed, continuing anyway');
       }
 
-      // Start Deepgram first and wait for connection
+      // Start Deepgram with timeout
+      console.log('[startCall] Connecting to Deepgram...');
       await startDeepgram();
       console.log('[startCall] Deepgram connected');
       
       // Then start mic
+      console.log('[startCall] Starting microphone...');
       await startMic();
       console.log('[startCall] Mic started');
 
@@ -382,12 +394,14 @@ export function useVoiceAgent() {
 
       addMessage('assistant', greeting);
       
-      // Try to play greeting - user gesture context may still be active
+      // Try to play greeting
+      console.log('[startCall] Playing greeting...');
       await speakText(greeting);
 
       if (!abortRef.current) {
         listeningRef.current = true;
         setStatus(AGENT_STATUS.LISTENING);
+        console.log('[startCall] Now listening for your response');
       }
     } catch (err) {
       console.error('[startCall]', err);
