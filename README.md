@@ -250,10 +250,13 @@ voice-scheduling-agent-v2/
 ## 📸 Screenshots
 
 ### Voice Agent UI
-![Voice Agent UI](./public/screenshot-ui.png)
+<img width="1190" height="678" alt="image" src="https://github.com/user-attachments/assets/ed483b9b-b6ad-4aef-8b81-998e07b100d8" />
+
 
 ### Calendar Event Created
-![Calendar Event](./public/screenshot-calendar.png)
+<img width="1190" height="678" alt="image" src="https://github.com/user-attachments/assets/cd6c3481-40fb-42cd-bd15-6b0fee033339" />
+
+
 
 ---
 
