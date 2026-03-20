@@ -203,7 +203,8 @@ export function useVoiceAgent() {
 
           // Use explicit encoding params for raw PCM audio
           const connection = client.listen.live({
-            model: 'nova-3',
+            // Use broadly available model for maximum account compatibility.
+            model: 'nova-2',
             language: 'en',
             encoding: 'linear16',      // Raw PCM (not webm/opus)
             sample_rate: 16000,        // 16kHz sample rate
@@ -249,7 +250,18 @@ export function useVoiceAgent() {
           connection.on(LiveTranscriptionEvents.Error, (err) => {
             console.error('[Deepgram] error', err);
             clearTimeout(timeout);
-            reject(new Error(`Deepgram websocket error: ${getErrorMessage(err)}`));
+            const msg = getErrorMessage(err);
+            // Browser websocket errors are often opaque (Event with isTrusted=true).
+            // Provide actionable guidance for ad/privacy blockers and restricted networks.
+            if (msg.includes('isTrusted')) {
+              reject(
+                new Error(
+                  'Deepgram websocket connection failed. This is often caused by network/privacy filters or unsupported realtime model access. Please disable content blockers for this site and try again.'
+                )
+              );
+              return;
+            }
+            reject(new Error(`Deepgram websocket error: ${msg}`));
           });
 
           connection.on(LiveTranscriptionEvents.Close, () => {
