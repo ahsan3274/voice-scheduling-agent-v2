@@ -47,7 +47,7 @@ export function useVoiceAgent() {
   const messagesRef = useRef([]);
   const dgRef = useRef(null);
   const streamRef = useRef(null);
-  const processorRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
   const audioCtxRef = useRef(null);
   const listeningRef = useRef(false);
   const isSpeakingRef = useRef(false);
@@ -279,90 +279,63 @@ export function useVoiceAgent() {
 
   function stopListening() {
     listeningRef.current = false;
+    
+    // Close Deepgram connection
     if (dgRef.current) {
       dgRef.current.finish();
       dgRef.current = null;
     }
-    if (processorRef.current) {
-      processorRef.current.disconnect();
-      processorRef.current = null;
+    
+    // Stop MediaRecorder
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current = null;
     }
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close();
-      audioCtxRef.current = null;
-    }
+    
+    // Stop microphone stream
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
+    
+    // Close AudioContext if exists
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close();
+      audioCtxRef.current = null;
+    }
+    
+    console.log('[stopListening] Cleanup complete');
   }
 
   async function startMic() {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: {
-      sampleRate: 16000,
-      channelCount: 1,
-      echoCancellation: true,
-      noiseSuppression: true,
-    }, video: false });
+    const stream = await navigator.mediaDevices.getUserMedia({ 
+      audio: {
+        sampleRate: 16000,
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+      } 
+    });
     streamRef.current = stream;
 
-    const audioCtx = new AudioContext({ sampleRate: 16000 });
-    audioCtxRef.current = audioCtx;
+    // Use MediaRecorder API (Deepgram's recommended approach)
+    const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+    mediaRecorderRef.current = mediaRecorder;
 
-    // Resume audio context if suspended (browser autoplay policy)
-    if (audioCtx.state === 'suspended') {
-      await audioCtx.resume();
-    }
-
-    const source = audioCtx.createMediaStreamSource(stream);
-
-    // ScriptProcessor fallback (broadly supported, no WASM needed)
-    const bufferSize = 4096;
-    const processor = audioCtx.createScriptProcessor(bufferSize, 1, 1);
-    let audioChunkCount = 0;
-    
-    processor.onaudioprocess = (e) => {
-      if (!dgRef.current) {
-        console.log('[Mic] Deepgram not connected, skipping audio');
-        return;
-      }
-      if (isSpeakingRef.current) {
-        console.log('[Mic] Speaking, blocking audio input');
-        return;
-      }
-      
-      const inputData = e.inputBuffer.getChannelData(0);
-      // Check if we have actual audio (not silence)
-      const rms = Math.sqrt(inputData.reduce((sum, val) => sum + val * val, 0) / inputData.length);
-      
-      // Convert Float32 → Int16 PCM and send to Deepgram
-      const pcm16 = float32ToInt16(inputData);
-      try {
-        dgRef.current.send(pcm16.buffer);
-        audioChunkCount++;
-        if (audioChunkCount % 10 === 0) {
-          console.log(`[Mic] Sent ${audioChunkCount} audio chunks to Deepgram, RMS: ${rms.toFixed(4)}`);
+    // Send audio chunks to Deepgram when available
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0 && dgRef.current && !isSpeakingRef.current) {
+        try {
+          dgRef.current.send(event.data);
+        } catch (err) {
+          console.error('[MediaRecorder] Error sending audio:', err);
         }
-      } catch (err) {
-        console.error('[Mic] Error sending audio to Deepgram:', err);
       }
     };
 
-    source.connect(processor);
-    // Don't connect to destination (speakers) - just process the data
-    // processor.connect(audioCtx.destination);
-    processorRef.current = processor;
-    
-    console.log('[Mic] started - streaming audio to Deepgram');
-  }
-
-  function float32ToInt16(buffer) {
-    const result = new Int16Array(buffer.length);
-    for (let i = 0; i < buffer.length; i++) {
-      const s = Math.max(-1, Math.min(1, buffer[i]));
-      result[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-    }
-    return result;
+    // Start recording with 250ms chunks (Deepgram's recommendation)
+    mediaRecorder.start(250);
+    console.log('[Mic] MediaRecorder started - streaming 250ms chunks to Deepgram');
   }
 
   // ── Public API ───────────────────────────────────────────────────────────
