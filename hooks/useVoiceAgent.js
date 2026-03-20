@@ -52,6 +52,7 @@ export function useVoiceAgent() {
   const listeningRef = useRef(false);
   const isSpeakingRef = useRef(false);
   const abortRef = useRef(false);
+  const audioChunkCountRef = useRef(0);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -338,7 +339,11 @@ export function useVoiceAgent() {
       if (isSpeakingRef.current) return; // Don't send audio while speaking
 
       const float32 = e.inputBuffer.getChannelData(0);
-      
+
+      // Calculate RMS to check if there's actual audio
+      const rms = Math.sqrt(float32.reduce((sum, val) => sum + val * val, 0) / float32.length);
+      if (rms < 0.01) return; // Skip silence (threshold)
+
       // Convert Float32 (-1 to 1) to Int16 PCM (-32768 to 32767)
       const int16 = new Int16Array(float32.length);
       for (let i = 0; i < float32.length; i++) {
@@ -348,6 +353,11 @@ export function useVoiceAgent() {
 
       try {
         dgRef.current.send(int16.buffer);
+        // Log first few chunks only
+        if (audioChunkCountRef.current < 5) {
+          console.log(`[ScriptProcessor] Sent audio chunk #${audioChunkCountRef.current + 1}: ${int16.buffer.byteLength} bytes, RMS: ${rms.toFixed(3)}`);
+          audioChunkCountRef.current++;
+        }
       } catch (err) {
         console.error('[ScriptProcessor] Error sending audio:', err);
       }
@@ -369,6 +379,8 @@ export function useVoiceAgent() {
     setLiveText('');
     setEventLink(null);
     setErrorMsg(null);
+    setAudioLevel(0);
+    audioChunkCountRef.current = 0;
     setStatus(AGENT_STATUS.CONNECTING);
 
     try {
