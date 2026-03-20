@@ -319,8 +319,22 @@ export function useVoiceAgent() {
     });
     streamRef.current = stream;
 
-    // Use MediaRecorder API (Deepgram's recommended approach)
-    const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+    // Use MediaRecorder API with multiple format fallbacks
+    const mimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg'];
+    let selectedMimeType = '';
+    
+    for (const mimeType of mimeTypes) {
+      if (MediaRecorder.isTypeSupported(mimeType)) {
+        selectedMimeType = mimeType;
+        break;
+      }
+    }
+    
+    if (!selectedMimeType) {
+      selectedMimeType = 'audio/webm'; // Fallback even if not supported
+    }
+
+    const mediaRecorder = new MediaRecorder(stream, { mimeType: selectedMimeType });
     mediaRecorderRef.current = mediaRecorder;
 
     // Set up audio level monitoring for visualizer
@@ -346,6 +360,7 @@ export function useVoiceAgent() {
       if (event.data.size > 0 && dgRef.current && !isSpeakingRef.current) {
         try {
           dgRef.current.send(event.data);
+          console.log('[MediaRecorder] Sent audio chunk:', event.data.size, 'bytes, type:', selectedMimeType);
         } catch (err) {
           console.error('[MediaRecorder] Error sending audio:', err);
         }
@@ -354,7 +369,7 @@ export function useVoiceAgent() {
 
     // Start recording with 250ms chunks (Deepgram's recommendation)
     mediaRecorder.start(250);
-    console.log('[Mic] MediaRecorder started - streaming 250ms chunks to Deepgram');
+    console.log('[Mic] MediaRecorder started with mimeType:', selectedMimeType);
   }
 
   // ── Public API ───────────────────────────────────────────────────────────
