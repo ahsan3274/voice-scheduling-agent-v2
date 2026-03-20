@@ -86,6 +86,9 @@ export function useVoiceAgent() {
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
 
+      // Enable autoplay by user gesture context
+      audio.preload = 'auto';
+      
       try {
         await Promise.race([
           new Promise((resolve, reject) => {
@@ -102,8 +105,13 @@ export function useVoiceAgent() {
       }
     } catch (err) {
       console.error('[speak]', err);
-      setErrorMsg(`Failed to play audio response: ${err.message}`);
-      setStatus(AGENT_STATUS.ERROR);
+      // Don't show error for autoplay issues - just continue silently
+      if (err.message.includes('not allowed') || err.message.includes('autoplay')) {
+        console.log('[speak] Autoplay blocked - continuing anyway');
+      } else {
+        setErrorMsg(`Failed to play audio response: ${err.message}`);
+        setStatus(AGENT_STATUS.ERROR);
+      }
     } finally {
       isSpeakingRef.current = false;
     }
@@ -309,6 +317,9 @@ export function useVoiceAgent() {
       const greeting = greetData.text || "Hi! I'm your scheduling assistant. What's your name?";
 
       addMessage('assistant', greeting);
+      
+      // Small delay to ensure user gesture context is still active
+      await new Promise(resolve => setTimeout(resolve, 100));
       await speakText(greeting);
 
       if (!abortRef.current) {
