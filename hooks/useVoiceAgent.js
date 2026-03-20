@@ -7,12 +7,6 @@
  *
  * State machine:
  *   idle → connecting → greeting → listening → thinking → speaking → listening → ... → ended
- *
- * FIXES APPLIED (March 20, 2026):
- * 1. Deepgram: Using ScriptProcessor with raw PCM linear16 encoding @ 16kHz
- *    (was: MediaRecorder webm/opus which Deepgram couldn't decode)
- * 2. Audio: Using AudioContext for playback (bypasses browser autoplay policy)
- * 3. Bedrock: Message deduplication and role alternation enforced in chat.js
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
