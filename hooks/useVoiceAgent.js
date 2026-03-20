@@ -377,6 +377,14 @@ export function useVoiceAgent() {
     setErrorMsg(null);
     setStatus(AGENT_STATUS.CONNECTING);
 
+    // Overall timeout for entire startup
+    const startupTimeout = setTimeout(() => {
+      console.error('[startCall] Startup timeout after 15 seconds');
+      setErrorMsg('Connection timed out. Please try again.');
+      setStatus(AGENT_STATUS.ERROR);
+      stopListening();
+    }, 15000);
+
     try {
       // Create audio context immediately on user click (preserves gesture context)
       const tempAudio = new Audio();
@@ -422,7 +430,10 @@ export function useVoiceAgent() {
         setStatus(AGENT_STATUS.LISTENING);
         console.log('[startCall] Now listening for your response');
       }
+      
+      clearTimeout(startupTimeout);
     } catch (err) {
+      clearTimeout(startupTimeout);
       console.error('[startCall]', err);
       setErrorMsg(err.message.includes('Permission') ? 'Microphone access was denied. Please allow mic access and try again.' : err.message);
       setStatus(AGENT_STATUS.ERROR);
