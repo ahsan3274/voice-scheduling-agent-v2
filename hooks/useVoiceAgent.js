@@ -246,6 +246,7 @@ export function useVoiceAgent() {
 
           connection.on(LiveTranscriptionEvents.Close, () => {
             console.log('[Deepgram] connection closed');
+            console.log('[Deepgram] Close event details:', { isOpen, hasConnection: !!dgRef.current });
             isOpen = false;
             dgRef.current = null;
           });
@@ -318,20 +319,38 @@ export function useVoiceAgent() {
     // ScriptProcessor fallback (broadly supported, no WASM needed)
     const bufferSize = 4096;
     const processor = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+    let audioChunkCount = 0;
+    
     processor.onaudioprocess = (e) => {
-      if (!dgRef.current || isSpeakingRef.current) return;
+      if (!dgRef.current) {
+        console.log('[Mic] Deepgram not connected, skipping audio');
+        return;
+      }
+      if (isSpeakingRef.current) {
+        console.log('[Mic] Speaking, blocking audio input');
+        return;
+      }
+      
       const inputData = e.inputBuffer.getChannelData(0);
+      // Check if we have actual audio (not silence)
+      const rms = Math.sqrt(inputData.reduce((sum, val) => sum + val * val, 0) / inputData.length);
+      
       // Convert Float32 → Int16 PCM and send to Deepgram
       const pcm16 = float32ToInt16(inputData);
       try {
         dgRef.current.send(pcm16.buffer);
+        audioChunkCount++;
+        if (audioChunkCount % 10 === 0) {
+          console.log(`[Mic] Sent ${audioChunkCount} audio chunks to Deepgram, RMS: ${rms.toFixed(4)}`);
+        }
       } catch (err) {
         console.error('[Mic] Error sending audio to Deepgram:', err);
       }
     };
 
     source.connect(processor);
-    processor.connect(audioCtx.destination);
+    // Don't connect to destination (speakers) - just process the data
+    // processor.connect(audioCtx.destination);
     processorRef.current = processor;
     
     console.log('[Mic] started - streaming audio to Deepgram');
