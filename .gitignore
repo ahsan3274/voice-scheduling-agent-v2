@@ -6,8 +6,4 @@ node_modules/
 out/
 .DS_Store
 *.log
-*.json
-!package.json
-!vercel.json
-!tsconfig.json
 TROUBLESHOOTING.md
