@@ -10,3 +10,4 @@ out/
 !package.json
 !vercel.json
 !tsconfig.json
+TROUBLESHOOTING.md
