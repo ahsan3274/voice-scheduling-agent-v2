@@ -178,62 +178,68 @@ export function useVoiceAgent() {
   // ── Deepgram connection ──────────────────────────────────────────────────
 
   async function startDeepgram() {
-    // Fetch a short-lived key from our server
-    const tokenRes = await fetch('/api/deepgram-token');
-    if (!tokenRes.ok) {
-      throw new Error(`Failed to get Deepgram token: ${tokenRes.status} ${tokenRes.statusText}`);
-    }
-    const { key } = await tokenRes.json();
+    return new Promise((resolve, reject) => {
+      // Fetch a short-lived key from our server
+      fetch('/api/deepgram-token')
+        .then(res => {
+          if (!res.ok) throw new Error(`Failed to get Deepgram token: ${res.status}`);
+          return res.json();
+        })
+        .then(({ key }) => {
+          const client = createClient(key);
 
-    const client = createClient(key);
+          const connection = client.listen.live({
+            model: 'nova-3',
+            language: 'en',
+            smart_format: true,
+            endpointing: 500,
+            interim_results: true,
+            utterance_end_ms: 1500,
+          });
 
-    const connection = client.listen.live({
-      model: 'nova-3',
-      language: 'en',
-      smart_format: true,
-      endpointing: 500,
-      interim_results: true,
-      utterance_end_ms: 1500,
+          connection.on(LiveTranscriptionEvents.Open, () => {
+            console.log('[Deepgram] connection open - ready to receive audio');
+            resolve(connection);
+          });
+
+          connection.on(LiveTranscriptionEvents.Transcript, (data) => {
+            const alt = data.channel?.alternatives?.[0];
+            if (!alt) return;
+
+            const text = alt.transcript?.trim();
+            const isFinal = data.is_final;
+
+            if (!text) return;
+
+            if (!isFinal) {
+              // Show interim transcript live
+              setLiveText(text);
+              return;
+            }
+
+            setLiveText('');
+            console.log('[Deepgram] final transcript:', text);
+
+            // Act on final transcripts (user finished speaking)
+            if (isFinal && listeningRef.current) {
+              listeningRef.current = false;
+              sendToLLM(text);
+            }
+          });
+
+          connection.on(LiveTranscriptionEvents.Error, (err) => {
+            console.error('[Deepgram] error', err);
+            reject(err);
+          });
+
+          connection.on(LiveTranscriptionEvents.Close, () => {
+            console.log('[Deepgram] connection closed');
+          });
+
+          dgRef.current = connection;
+        })
+        .catch(reject);
     });
-
-    connection.on(LiveTranscriptionEvents.Open, () => {
-      console.log('[Deepgram] connection open');
-    });
-
-    connection.on(LiveTranscriptionEvents.Transcript, (data) => {
-      const alt = data.channel?.alternatives?.[0];
-      if (!alt) return;
-
-      const text = alt.transcript?.trim();
-      const isFinal = data.is_final;
-      const isSpeech = data.speech_final;
-
-      if (!text) return;
-
-      if (!isFinal) {
-        // Show interim transcript live
-        setLiveText(text);
-        return;
-      }
-
-      setLiveText('');
-
-      // Act on final transcripts (user finished speaking)
-      if (isFinal && listeningRef.current) {
-        listeningRef.current = false; // prevent double-firing
-        sendToLLM(text);
-      }
-    });
-
-    connection.on(LiveTranscriptionEvents.Error, (err) => {
-      console.error('[Deepgram] error', err);
-    });
-
-    connection.on(LiveTranscriptionEvents.Close, () => {
-      console.log('[Deepgram] connection closed');
-    });
-
-    dgRef.current = connection;
   }
 
   function stopListening() {
@@ -263,6 +269,11 @@ export function useVoiceAgent() {
     const audioCtx = new AudioContext({ sampleRate: 16000 });
     audioCtxRef.current = audioCtx;
 
+    // Resume audio context if suspended (browser autoplay policy)
+    if (audioCtx.state === 'suspended') {
+      await audioCtx.resume();
+    }
+
     const source = audioCtx.createMediaStreamSource(stream);
 
     // ScriptProcessor fallback (broadly supported, no WASM needed)
@@ -279,6 +290,8 @@ export function useVoiceAgent() {
     source.connect(processor);
     processor.connect(audioCtx.destination);
     processorRef.current = processor;
+    
+    console.log('[Mic] started - streaming audio to Deepgram');
   }
 
   function float32ToInt16(buffer) {
@@ -303,8 +316,13 @@ export function useVoiceAgent() {
     setStatus(AGENT_STATUS.CONNECTING);
 
     try {
+      // Start Deepgram first and wait for connection
       await startDeepgram();
+      console.log('[startCall] Deepgram connected');
+      
+      // Then start mic
       await startMic();
+      console.log('[startCall] Mic started');
 
       // Kick off the conversation with a greeting
       setStatus(AGENT_STATUS.GREETING);
