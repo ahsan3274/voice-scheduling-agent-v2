@@ -250,7 +250,7 @@ voice-scheduling-agent-v2/
 ## 📸 Screenshots
 
 ### Voice Agent UI
-![Uploading image.png…]()
+<img width="1440" height="678" alt="image" src="https://github.com/user-attachments/assets/b9caba27-d7fd-4347-bbe5-52e01d95f325" />
 
 
 ### Calendar Event Created
