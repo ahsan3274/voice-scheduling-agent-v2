@@ -55,6 +55,16 @@ export function useVoiceAgent() {
   const audioChunkCountRef = useRef(0);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
+  function getErrorMessage(err, fallback = 'Unknown error') {
+    if (!err) return fallback;
+    if (typeof err === 'string') return err;
+    if (typeof err.message === 'string' && err.message.trim()) return err.message;
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return fallback;
+    }
+  }
 
   function addMessage(role, text) {
     messagesRef.current = [...messagesRef.current, { role, content: text }];
@@ -103,7 +113,7 @@ export function useVoiceAgent() {
         source.start(0);
       });
     } catch (err) {
-      console.warn('[speak] Audio playback error (non-fatal):', err.message);
+      console.warn('[speak] Audio playback error (non-fatal):', getErrorMessage(err));
       // Don't fail the flow for audio issues - continue with text only
     } finally {
       isSpeakingRef.current = false;
@@ -234,7 +244,7 @@ export function useVoiceAgent() {
           connection.on(LiveTranscriptionEvents.Error, (err) => {
             console.error('[Deepgram] error', err);
             clearTimeout(timeout);
-            reject(err);
+            reject(new Error(`Deepgram websocket error: ${getErrorMessage(err)}`));
           });
 
           connection.on(LiveTranscriptionEvents.Close, () => {
@@ -447,7 +457,7 @@ export function useVoiceAgent() {
       // Play greeting using AudioContext (not HTML5 Audio)
       console.log('[startCall] Playing greeting...');
       await speakText(greeting).catch((err) => {
-        console.log('[startCall] Audio playback error (continuing):', err.message);
+        console.log('[startCall] Audio playback error (continuing):', getErrorMessage(err));
       });
 
       if (!abortRef.current) {
@@ -457,10 +467,11 @@ export function useVoiceAgent() {
       }
     } catch (err) {
       console.error('[startCall]', err);
+      const msg = getErrorMessage(err, 'Failed to start voice call');
       setErrorMsg(
-        err.message.includes('Permission') || err.message.includes('denied')
+        msg.toLowerCase().includes('permission') || msg.toLowerCase().includes('denied')
           ? 'Microphone access was denied. Please allow mic access and try again.'
-          : err.message
+          : msg
       );
       setStatus(AGENT_STATUS.ERROR);
       stopListening('startCall-error');

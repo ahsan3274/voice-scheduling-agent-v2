@@ -31,7 +31,8 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           comment: 'voice-agent-ephemeral',
-          scopes: ['usage:write'],
+          // Include listen scope so browser can open live transcription websocket.
+          scopes: ['usage:write', 'listen:write'],
           time_to_live_in_seconds: 3600,
         }),
       }
