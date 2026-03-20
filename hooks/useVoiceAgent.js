@@ -334,8 +334,22 @@ export function useVoiceAgent() {
     const scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
     scriptProcessorRef.current = scriptProcessor;
 
+    // Deepgram SDK can expose connection state differently by version.
+    // Accept string and numeric open states.
+    const isDeepgramConnectionOpen = () => {
+      const conn = dgRef.current;
+      if (!conn) return false;
+
+      if (typeof conn.getReadyState === 'function') {
+        const state = conn.getReadyState();
+        if (state === 1 || state === 'open') return true;
+      }
+
+      return conn.readyState === 1 || conn.readyState === 'open';
+    };
+
     scriptProcessor.onaudioprocess = (e) => {
-      if (!dgRef.current || dgRef.current.readyState !== 'open') return;
+      if (!isDeepgramConnectionOpen()) return;
       if (isSpeakingRef.current) return; // Don't send audio while speaking
 
       const float32 = e.inputBuffer.getChannelData(0);
