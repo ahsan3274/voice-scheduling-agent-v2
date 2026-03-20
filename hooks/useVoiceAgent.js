@@ -48,6 +48,7 @@ export function useVoiceAgent() {
   const streamRef = useRef(null);
   const audioCtxRef = useRef(null);
   const scriptProcessorRef = useRef(null);
+  const silentGainRef = useRef(null);
   const analyserRef = useRef(null);
   const listeningRef = useRef(false);
   const isSpeakingRef = useRef(false);
@@ -193,7 +194,11 @@ export function useVoiceAgent() {
           if (!res.ok) throw new Error(`Failed to get Deepgram token: ${res.status}`);
           return res.json();
         })
-        .then(({ key }) => {
+        .then(({ key, source }) => {
+          if (!key || typeof key !== 'string') {
+            throw new Error('Deepgram token endpoint returned an invalid key');
+          }
+          console.log(`[Deepgram] auth source: ${source || 'unknown'}`);
           const client = createClient(key);
 
           // Use explicit encoding params for raw PCM audio
@@ -201,7 +206,7 @@ export function useVoiceAgent() {
             model: 'nova-3',
             language: 'en',
             encoding: 'linear16',      // Raw PCM (not webm/opus)
-            sample_rate: '16000',      // 16kHz sample rate
+            sample_rate: 16000,        // 16kHz sample rate
             smart_format: true,
             interim_results: true,
             // Lower endpointing so the assistant stops "listening" sooner.
@@ -295,6 +300,12 @@ export function useVoiceAgent() {
       scriptProcessorRef.current = null;
     }
 
+    // Disconnect muted output node used for ScriptProcessor execution.
+    if (silentGainRef.current) {
+      silentGainRef.current.disconnect();
+      silentGainRef.current = null;
+    }
+
     // Stop analyser
     if (analyserRef.current) {
       analyserRef.current.disconnect();
@@ -348,6 +359,9 @@ export function useVoiceAgent() {
     // 4096 buffer size = ~250ms chunks at 16kHz
     const scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
     scriptProcessorRef.current = scriptProcessor;
+    const silentGain = audioContext.createGain();
+    silentGain.gain.value = 0;
+    silentGainRef.current = silentGain;
 
     // Deepgram SDK can expose connection state differently by version.
     // Accept string and numeric open states.
@@ -398,7 +412,9 @@ export function useVoiceAgent() {
     };
 
     source.connect(scriptProcessor);
-    scriptProcessor.connect(audioContext.destination);
+    // Keep ScriptProcessor active while preventing audible mic passthrough.
+    scriptProcessor.connect(silentGain);
+    silentGain.connect(audioContext.destination);
 
     console.log('[Mic] ScriptProcessor started - sending PCM linear16 @ 16kHz');
   }
@@ -407,7 +423,7 @@ export function useVoiceAgent() {
 
   const startCall = useCallback(async () => {
     abortRef.current = false;
-    listeningRef.current = true;
+    listeningRef.current = false;
     messagesRef.current = [];
     setTranscript([]);
     setLiveText('');
