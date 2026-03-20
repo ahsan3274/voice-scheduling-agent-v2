@@ -106,8 +106,9 @@ export function useVoiceAgent() {
     } catch (err) {
       console.error('[speak]', err);
       // Don't show error for autoplay issues - just continue silently
-      if (err.message.includes('not allowed') || err.message.includes('autoplay')) {
+      if (err.message.includes('not allowed') || err.message.includes('autoplay') || err.message.includes('play()')) {
         console.log('[speak] Autoplay blocked - continuing anyway');
+        // Still set status back so UI updates
       } else {
         setErrorMsg(`Failed to play audio response: ${err.message}`);
         setStatus(AGENT_STATUS.ERROR);
@@ -348,6 +349,19 @@ export function useVoiceAgent() {
     setStatus(AGENT_STATUS.CONNECTING);
 
     try {
+      // Create audio context immediately on user click (preserves gesture context)
+      const tempAudio = new Audio();
+      tempAudio.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAAAAAA=='; // 1ms silent WAV
+      
+      // This MUST be synchronous with the click
+      try {
+        await tempAudio.play();
+        tempAudio.pause();
+      } catch (e) {
+        // Ignore if this fails - we'll try again later
+        console.log('[startCall] Initial audio warmup failed, will retry later');
+      }
+
       // Start Deepgram first and wait for connection
       await startDeepgram();
       console.log('[startCall] Deepgram connected');
@@ -368,8 +382,7 @@ export function useVoiceAgent() {
 
       addMessage('assistant', greeting);
       
-      // Small delay to ensure user gesture context is still active
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // Try to play greeting - user gesture context may still be active
       await speakText(greeting);
 
       if (!abortRef.current) {
