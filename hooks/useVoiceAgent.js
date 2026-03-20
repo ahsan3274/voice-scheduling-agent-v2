@@ -350,29 +350,8 @@ export function useVoiceAgent() {
     setErrorMsg(null);
     setStatus(AGENT_STATUS.CONNECTING);
 
-    // Overall timeout for entire startup
-    const startupTimeout = setTimeout(() => {
-      console.error('[startCall] Startup timeout after 15 seconds');
-      setErrorMsg('Connection timed out. Please try again.');
-      setStatus(AGENT_STATUS.ERROR);
-      stopListening();
-    }, 15000);
-
     try {
-      // Create audio context immediately on user click (preserves gesture context)
-      const tempAudio = new Audio();
-      tempAudio.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAAAAAA=='; // 1ms silent WAV
-      
-      // This MUST be synchronous with the click
-      try {
-        await tempAudio.play();
-        tempAudio.pause();
-        console.log('[startCall] Audio warmup successful');
-      } catch (e) {
-        console.log('[startCall] Audio warmup failed, continuing anyway');
-      }
-
-      // Start Deepgram with timeout
+      // Start Deepgram first
       console.log('[startCall] Connecting to Deepgram...');
       await startDeepgram();
       console.log('[startCall] Deepgram connected');
@@ -394,19 +373,18 @@ export function useVoiceAgent() {
 
       addMessage('assistant', greeting);
       
-      // Try to play greeting
+      // Play greeting (audio may be blocked, that's ok)
       console.log('[startCall] Playing greeting...');
-      await speakText(greeting);
+      speakText(greeting).catch(() => {
+        console.log('[startCall] Audio playback failed, continuing with text only');
+      });
 
       if (!abortRef.current) {
         listeningRef.current = true;
         setStatus(AGENT_STATUS.LISTENING);
         console.log('[startCall] Now listening for your response');
       }
-      
-      clearTimeout(startupTimeout);
     } catch (err) {
-      clearTimeout(startupTimeout);
       console.error('[startCall]', err);
       setErrorMsg(err.message.includes('Permission') ? 'Microphone access was denied. Please allow mic access and try again.' : err.message);
       setStatus(AGENT_STATUS.ERROR);
