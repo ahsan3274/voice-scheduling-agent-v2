@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build
+        run: npm run build
+        env:
+          DEEPGRAM_API_KEY: dg-placeholder
+          AWS_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: AKIAIOSFODNN7EXAMPLE
+          AWS_SECRET_ACCESS_KEY: placeholder
+          BEDROCK_MODEL_ID: meta.llama3-3-70b-instruct-v1:0
+          POLLY_VOICE_ID: Joanna
+          GOOGLE_SERVICE_ACCOUNT_JSON: '{"type":"service_account","project_id":"x","private_key_id":"x","private_key":"x","client_email":"x@x.iam.gserviceaccount.com","client_id":"x","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token"}'
+          GOOGLE_CALENDAR_ID: primary
