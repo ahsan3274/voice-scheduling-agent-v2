@@ -149,16 +149,17 @@ export function useVoiceAgent() {
         });
         const booking = await bookRes.json();
 
-        let confirmText;
+        let spokenText;
         if (booking.success) {
           setEventLink(booking.eventLink);
-          confirmText = `Your meeting has been booked! I've added "${booking.summary}" to your calendar. You can view it at: ${booking.eventLink}`;
+          // Do NOT speak the raw URL; browsers/polly will often spell it character-by-character.
+          spokenText = `Perfect! Your meeting has been booked. I've added "${booking.summary}" to your calendar. Please click the calendar link on screen to view it.`;
         } else {
-          confirmText = `I'm sorry, there was a problem creating the event: ${booking.error}. Please try again.`;
+          spokenText = `I'm sorry, there was a problem creating the event. Please try again.`;
         }
 
-        addMessage('assistant', confirmText);
-        await speakText(confirmText);
+        addMessage('assistant', spokenText);
+        await speakText(spokenText);
         setStatus(AGENT_STATUS.ENDED);
         stopListening('booking-complete');
         return;
