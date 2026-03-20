@@ -43,6 +43,7 @@ export function useVoiceAgent() {
   const [liveText, setLiveText] = useState('');
   const [eventLink, setEventLink] = useState(null);
   const [errorMsg, setErrorMsg] = useState(null);
+  const [audioLevel, setAudioLevel] = useState(0); // For mic visualizer
 
   const messagesRef = useRef([]);
   const dgRef = useRef(null);
@@ -322,6 +323,24 @@ export function useVoiceAgent() {
     const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
     mediaRecorderRef.current = mediaRecorder;
 
+    // Set up audio level monitoring for visualizer
+    const audioContext = new AudioContext();
+    const analyser = audioContext.createAnalyser();
+    const microphone = audioContext.createMediaStreamSource(stream);
+    microphone.connect(analyser);
+    analyser.fftSize = 256;
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+    const updateAudioLevel = () => {
+      analyser.getByteFrequencyData(dataArray);
+      const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+      setAudioLevel(Math.min(100, (average / 255) * 100));
+      if (listeningRef.current) {
+        requestAnimationFrame(updateAudioLevel);
+      }
+    };
+    updateAudioLevel();
+
     // Send audio chunks to Deepgram when available
     mediaRecorder.ondataavailable = (event) => {
       if (event.data.size > 0 && dgRef.current && !isSpeakingRef.current) {
@@ -407,5 +426,5 @@ export function useVoiceAgent() {
     };
   }, []);
 
-  return { status, transcript, liveText, eventLink, errorMsg, startCall, stopCall };
+  return { status, transcript, liveText, eventLink, errorMsg, audioLevel, startCall, stopCall };
 }

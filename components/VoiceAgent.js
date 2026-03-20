@@ -12,7 +12,7 @@ const STATUS_META = {
 };
 
 export default function VoiceAgent() {
-  const { status, transcript, liveText, eventLink, errorMsg, startCall, stopCall } = useVoiceAgent();
+  const { status, transcript, liveText, eventLink, errorMsg, audioLevel, startCall, stopCall } = useVoiceAgent();
   const meta = STATUS_META[status] || STATUS_META[AGENT_STATUS.IDLE];
   const isActive = [AGENT_STATUS.CONNECTING, AGENT_STATUS.GREETING, AGENT_STATUS.LISTENING, AGENT_STATUS.THINKING, AGENT_STATUS.SPEAKING].includes(status);
   const isSpeaking = status === AGENT_STATUS.SPEAKING;
@@ -42,7 +42,7 @@ export default function VoiceAgent() {
           {status === AGENT_STATUS.CONNECTING || status === AGENT_STATUS.GREETING
             ? <Spinner />
             : isSpeaking ? <WaveIcon color="#f472b6" />
-            : isListening ? <MicIcon />
+            : isListening ? <MicVisualizer level={audioLevel} />
             : isThinking ? <ThinkingDots />
             : isActive ? <MicIcon />
             : <PhoneIcon />}
@@ -136,6 +136,28 @@ function MicIcon() {
       <line x1="12" y1="19" x2="12" y2="23"/>
       <line x1="8" y1="23" x2="16" y2="23"/>
     </svg>
+  );
+}
+
+function MicVisualizer({ level = 0 }) {
+  // Scale bars based on audio level
+  const scale = Math.max(0.3, level / 100);
+  return (
+    <div className="flex items-end gap-1" style={{ height: 34 }}>
+      {[8, 14, 20, 14, 8].map((h, i) => (
+        <div 
+          key={i} 
+          className="wave-bar rounded-full" 
+          style={{ 
+            width: 5, 
+            height: h * scale, 
+            background: level > 50 ? '#10b981' : '#60a5fa',
+            transformOrigin: 'bottom',
+            transition: 'height 0.1s ease'
+          }} 
+        />
+      ))}
+    </div>
   );
 }
 

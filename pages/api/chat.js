@@ -19,10 +19,13 @@ export default async function handler(req, res) {
   }
 
   try {
+    console.log('[chat] Request messages:', messages);
     const result = await chat(messages);
+    console.log('[chat] Response:', result);
     return res.status(200).json(result);
   } catch (err) {
-    console.error('[chat]', err);
-    return res.status(500).json({ error: err.message });
+    console.error('[chat] Error:', err);
+    console.error('[chat] Error details:', err.message, err.stack);
+    return res.status(500).json({ error: err.message, details: err.toString() });
   }
 }
