@@ -158,7 +158,11 @@ export function useVoiceAgent() {
       addMessage('assistant', replyText);
       await speakText(replyText);
 
-      if (!abortRef.current) setStatus(AGENT_STATUS.LISTENING);
+      if (!abortRef.current) {
+        // Re-enable user listening for the next turn.
+        listeningRef.current = true;
+        setStatus(AGENT_STATUS.LISTENING);
+      }
     } catch (err) {
       console.error('[llm]', err);
       setErrorMsg('Something went wrong. Please try again.');
@@ -190,7 +194,8 @@ export function useVoiceAgent() {
             sample_rate: '16000',      // 16kHz sample rate
             smart_format: true,
             interim_results: true,
-            utterance_end_ms: 1500,
+            // Lower endpointing so the assistant stops "listening" sooner.
+            utterance_end_ms: 900,
             vad_events: true,
           });
 
@@ -350,13 +355,16 @@ export function useVoiceAgent() {
 
     scriptProcessor.onaudioprocess = (e) => {
       if (!isDeepgramConnectionOpen()) return;
+      // Only stream mic audio while we're expecting the user's next utterance.
+      if (!listeningRef.current) return;
       if (isSpeakingRef.current) return; // Don't send audio while speaking
 
       const float32 = e.inputBuffer.getChannelData(0);
 
       // Calculate RMS to check if there's actual audio
       const rms = Math.sqrt(float32.reduce((sum, val) => sum + val * val, 0) / float32.length);
-      if (rms < 0.01) return; // Skip silence (threshold)
+      // Do NOT skip silence entirely: Deepgram's endpointing/VAD needs some frames
+      // after speech to reliably detect the end of the user's utterance.
 
       // Convert Float32 (-1 to 1) to Int16 PCM (-32768 to 32767)
       const int16 = new Int16Array(float32.length);
@@ -369,7 +377,9 @@ export function useVoiceAgent() {
         dgRef.current.send(int16.buffer);
         // Log first few chunks only
         if (audioChunkCountRef.current < 5) {
-          console.log(`[ScriptProcessor] Sent audio chunk #${audioChunkCountRef.current + 1}: ${int16.buffer.byteLength} bytes, RMS: ${rms.toFixed(3)}`);
+          console.log(
+            `[ScriptProcessor] Sent audio chunk #${audioChunkCountRef.current + 1}: ${int16.buffer.byteLength} bytes, RMS: ${rms.toFixed(3)}`
+          );
           audioChunkCountRef.current++;
         }
       } catch (err) {
@@ -436,7 +446,7 @@ export function useVoiceAgent() {
 
       // Play greeting using AudioContext (not HTML5 Audio)
       console.log('[startCall] Playing greeting...');
-      speakText(greeting).catch((err) => {
+      await speakText(greeting).catch((err) => {
         console.log('[startCall] Audio playback error (continuing):', err.message);
       });
 
