@@ -201,93 +201,160 @@ export function useVoiceAgent() {
           console.log(`[Deepgram] auth source: ${source || 'unknown'}`);
           const client = createClient(key);
 
-          // Use explicit encoding params for raw PCM audio
-          const connection = client.listen.live({
-            // Use broadly available model for maximum account compatibility.
-            model: 'nova-2',
-            language: 'en',
-            encoding: 'linear16',      // Raw PCM (not webm/opus)
-            sample_rate: 16000,        // 16kHz sample rate
-            smart_format: true,
-            interim_results: true,
-            // Lower endpointing so the assistant stops "listening" sooner.
-            utterance_end_ms: 900,
-            vad_events: true,
-          });
+          const configs = [
+            {
+              label: 'nova-2 (endpointing+VAD)',
+              model: 'nova-2',
+              smart_format: true,
+              interim_results: true,
+              utterance_end_ms: 900,
+              vad_events: true,
+            },
+            {
+              // Simplify params in case endpointing/VAD flags are rejected.
+              label: 'nova-2 (minimal)',
+              model: 'nova-2',
+              smart_format: false,
+              interim_results: true,
+              vad_events: false,
+            },
+            {
+              label: 'nova-3 (fallback)',
+              model: 'nova-3',
+              smart_format: true,
+              interim_results: true,
+              utterance_end_ms: 1200,
+              vad_events: true,
+            },
+          ];
 
-          let isOpen = false;
+          const buildAttemptUrl = (cfg) => {
+            const params = new URLSearchParams({
+              model: cfg.model,
+              language: 'en',
+              encoding: 'linear16',
+              sample_rate: '16000',
+              smart_format: String(cfg.smart_format ?? true),
+              interim_results: String(cfg.interim_results ?? true),
+              ...(cfg.utterance_end_ms ? { utterance_end_ms: String(cfg.utterance_end_ms) } : {}),
+              vad_events: String(cfg.vad_events ?? true),
+            });
+            return `wss://api.deepgram.com/v1/listen?${params.toString()}`;
+          };
 
-          connection.on(LiveTranscriptionEvents.Open, () => {
-            isOpen = true;
-            clearTimeout(timeout);
-            console.log('[Deepgram] connection open - ready to receive PCM audio');
-            resolve(connection);
-          });
+          const tryConfig = (cfg) =>
+            new Promise((cfgResolve, cfgReject) => {
+              const connection = client.listen.live({
+                model: cfg.model,
+                language: 'en',
+                encoding: 'linear16', // Raw PCM
+                sample_rate: 16000,
+                smart_format: cfg.smart_format,
+                interim_results: cfg.interim_results,
+                ...(cfg.utterance_end_ms ? { utterance_end_ms: cfg.utterance_end_ms } : {}),
+                vad_events: cfg.vad_events,
+              });
 
-          connection.on(LiveTranscriptionEvents.Transcript, (data) => {
-            const alt = data.channel?.alternatives?.[0];
-            if (!alt) return;
+              const perAttemptTimeout = setTimeout(() => {
+                try {
+                  connection.finish();
+                } catch {}
+                cfgReject(new Error(`Deepgram websocket timed out (${cfg.label}) :: ${buildAttemptUrl(cfg)}`));
+              }, 3000);
 
-            const text = alt.transcript?.trim();
-            const isFinal = data.is_final;
+              connection.on(LiveTranscriptionEvents.Open, () => {
+                clearTimeout(perAttemptTimeout);
+                console.log(`[Deepgram] connection open (${cfg.label})`);
 
-            if (!text) return;
+                // Route events to the same handler logic.
+                connection.on(LiveTranscriptionEvents.Transcript, (data) => {
+                  const alt = data.channel?.alternatives?.[0];
+                  if (!alt) return;
 
-            if (!isFinal) {
-              setLiveText(text);
-              return;
-            }
+                  const text = alt.transcript?.trim();
+                  const isFinal = data.is_final;
+                  if (!text) return;
 
-            setLiveText('');
-            console.log('[Deepgram] final transcript:', text);
+                  if (!isFinal) {
+                    setLiveText(text);
+                    return;
+                  }
 
-            if (listeningRef.current) {
-              listeningRef.current = false;
-              sendToLLM(text);
-            }
-          });
+                  setLiveText('');
+                  console.log('[Deepgram] final transcript:', text);
 
-          connection.on(LiveTranscriptionEvents.Error, (err) => {
-            console.error('[Deepgram] error', err);
-            clearTimeout(timeout);
-            const msg = getErrorMessage(err);
-            // Browser websocket errors are often opaque (Event with isTrusted=true).
-            // Provide actionable guidance for ad/privacy blockers and restricted networks.
-            if (msg.includes('isTrusted')) {
-              reject(
-                new Error(
-                  'Deepgram websocket connection failed. This is often caused by network/privacy filters or unsupported realtime model access. Please disable content blockers for this site and try again.'
-                )
-              );
-              return;
-            }
-            reject(new Error(`Deepgram websocket error: ${msg}`));
-          });
+                  if (listeningRef.current) {
+                    listeningRef.current = false;
+                    sendToLLM(text);
+                  }
+                });
 
-          connection.on(LiveTranscriptionEvents.Close, () => {
-            console.log('[Deepgram] connection closed');
-            isOpen = false;
-            dgRef.current = null;
-          });
+                connection.on(LiveTranscriptionEvents.Close, () => {
+                  console.log(`[Deepgram] connection closed (${cfg.label})`);
+                  dgRef.current = null;
+                });
 
-          connection.on(LiveTranscriptionEvents.UnhandledError, (err) => {
-            console.error('[Deepgram] unhandled error', err);
-          });
+                connection.on(LiveTranscriptionEvents.UnhandledError, (err) => {
+                  console.error('[Deepgram] unhandled error', err);
+                });
 
-          dgRef.current = connection;
+                // Keepalive only once open.
+                let isOpen = true;
+                dgRef.current = connection;
+                const keepalive = setInterval(() => {
+                  if (!isOpen || !dgRef.current) return clearInterval(keepalive);
+                  try {
+                    dgRef.current.keepAlive();
+                  } catch {
+                    clearInterval(keepalive);
+                  }
+                }, 10000);
 
-          // Keepalive
-          const keepalive = setInterval(() => {
-            if (isOpen && dgRef.current) {
+                // Stop keepalive if connection closes.
+                connection.on(LiveTranscriptionEvents.Close, () => {
+                  isOpen = false;
+                  clearInterval(keepalive);
+                });
+
+                cfgResolve(connection);
+              });
+
+              connection.on(LiveTranscriptionEvents.Error, (err) => {
+                clearTimeout(perAttemptTimeout);
+                console.error('[Deepgram] error', err);
+                try {
+                  connection.finish();
+                } catch {}
+
+                const msg = getErrorMessage(err);
+                const url = buildAttemptUrl(cfg);
+                if (msg.includes('isTrusted')) {
+                  cfgReject(
+                    new Error(
+                      `Deepgram websocket failed (${cfg.label}). This is often caused by network/privacy filters or restricted realtime model access. Attempted: ${url}`
+                    )
+                  );
+                  return;
+                }
+                cfgReject(new Error(`Deepgram websocket error (${cfg.label}): ${msg} :: ${url}`));
+              });
+            });
+
+          (async () => {
+            let lastErr = null;
+            for (const cfg of configs) {
               try {
-                dgRef.current.keepAlive();
+                const c = await tryConfig(cfg);
+                clearTimeout(timeout);
+                resolve(c);
+                return;
               } catch (e) {
-                clearInterval(keepalive);
+                lastErr = e;
               }
-            } else {
-              clearInterval(keepalive);
             }
-          }, 10000);
+            clearTimeout(timeout);
+            reject(lastErr || new Error('Deepgram websocket failed'));
+          })();
         })
         .catch(err => {
           clearTimeout(timeout);
