@@ -195,9 +195,13 @@ export function useVoiceAgent() {
             endpointing: 500,
             interim_results: true,
             utterance_end_ms: 1500,
+            vad_events: true, // Enable voice activity detection events
           });
 
+          let isOpen = false;
+
           connection.on(LiveTranscriptionEvents.Open, () => {
+            isOpen = true;
             console.log('[Deepgram] connection open - ready to receive audio');
             resolve(connection);
           });
@@ -221,7 +225,7 @@ export function useVoiceAgent() {
             console.log('[Deepgram] final transcript:', text);
 
             // Act on final transcripts (user finished speaking)
-            if (isFinal && listeningRef.current) {
+            if (listeningRef.current) {
               listeningRef.current = false;
               sendToLLM(text);
             }
@@ -234,9 +238,28 @@ export function useVoiceAgent() {
 
           connection.on(LiveTranscriptionEvents.Close, () => {
             console.log('[Deepgram] connection closed');
+            isOpen = false;
+            dgRef.current = null;
+          });
+
+          connection.on(LiveTranscriptionEvents.UnhandledError, (err) => {
+            console.error('[Deepgram] unhandled error', err);
           });
 
           dgRef.current = connection;
+          
+          // Keep connection alive with periodic keepalive
+          const keepalive = setInterval(() => {
+            if (isOpen && dgRef.current) {
+              try {
+                dgRef.current.keepAlive();
+              } catch (e) {
+                clearInterval(keepalive);
+              }
+            } else {
+              clearInterval(keepalive);
+            }
+          }, 10000);
         })
         .catch(reject);
     });
@@ -263,7 +286,12 @@ export function useVoiceAgent() {
   }
 
   async function startMic() {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: {
+      sampleRate: 16000,
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+    }, video: false });
     streamRef.current = stream;
 
     const audioCtx = new AudioContext({ sampleRate: 16000 });
@@ -284,7 +312,11 @@ export function useVoiceAgent() {
       const inputData = e.inputBuffer.getChannelData(0);
       // Convert Float32 → Int16 PCM and send to Deepgram
       const pcm16 = float32ToInt16(inputData);
-      dgRef.current.send(pcm16.buffer);
+      try {
+        dgRef.current.send(pcm16.buffer);
+      } catch (err) {
+        console.error('[Mic] Error sending audio to Deepgram:', err);
+      }
     };
 
     source.connect(processor);
