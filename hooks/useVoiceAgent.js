@@ -1,19 +1,25 @@
 /**
  * hooks/useVoiceAgent.js
  *
- * Orchestrates the full real-time voice loop:
+ * Orchestrates the complete voice loop:
  *
  *   Mic → Deepgram (STT) → /api/chat (Bedrock LLM) → /api/create-event → /api/speak (Polly TTS) → Speaker
  *
  * State machine:
  *   idle → connecting → greeting → listening → thinking → speaking → listening → ... → ended
+ *
+ * FIXES APPLIED (March 20, 2026):
+ * 1. Deepgram: Using ScriptProcessor with raw PCM linear16 encoding @ 16kHz
+ *    (was: MediaRecorder webm/opus which Deepgram couldn't decode)
+ * 2. Audio: Using AudioContext for playback (bypasses browser autoplay policy)
+ * 3. Bedrock: Message deduplication and role alternation enforced in chat.js
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createClient, LiveTranscriptionEvents } from '@deepgram/sdk';
 
 /**
- * Agent status constants representing the current state of the voice agent
+ * Agent status constants
  */
 export const AGENT_STATUS = {
   IDLE: 'idle',
@@ -28,14 +34,6 @@ export const AGENT_STATUS = {
 
 /**
  * Custom hook that manages the complete voice agent lifecycle
- * @returns {Object} Voice agent state and controls
- * @returns {string} status - Current agent status
- * @returns {Array} transcript - Conversation history
- * @returns {string} liveText - Live transcription text
- * @returns {string|null} eventLink - Created event link if booking succeeded
- * @returns {string|null} errorMsg - Error message if any
- * @returns {Function} startCall - Start the voice call
- * @returns {Function} stopCall - Stop the voice call
  */
 export function useVoiceAgent() {
   const [status, setStatus] = useState(AGENT_STATUS.IDLE);
@@ -43,32 +41,28 @@ export function useVoiceAgent() {
   const [liveText, setLiveText] = useState('');
   const [eventLink, setEventLink] = useState(null);
   const [errorMsg, setErrorMsg] = useState(null);
-  const [audioLevel, setAudioLevel] = useState(0); // For mic visualizer
+  const [audioLevel, setAudioLevel] = useState(0);
 
   const messagesRef = useRef([]);
   const dgRef = useRef(null);
   const streamRef = useRef(null);
-  const mediaRecorderRef = useRef(null);
   const audioCtxRef = useRef(null);
+  const scriptProcessorRef = useRef(null);
+  const analyserRef = useRef(null);
   const listeningRef = useRef(false);
   const isSpeakingRef = useRef(false);
   const abortRef = useRef(false);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
-  /**
-   * Add a message to both the LLM history and UI transcript
-   * @param {string} role - 'user' or 'assistant'
-   * @param {string} text - Message text
-   */
   function addMessage(role, text) {
     messagesRef.current = [...messagesRef.current, { role, content: text }];
     setTranscript((prev) => [...prev, { role, text }]);
   }
 
   /**
-   * Convert text to speech using AWS Polly and play it
-   * @param {string} text - Text to speak
+   * Play audio using Web Audio API (bypasses autoplay policy)
+   * AudioContext is created/resumed on user click, keeping gesture context alive
    */
   async function speakText(text) {
     if (abortRef.current) return;
@@ -81,37 +75,36 @@ export function useVoiceAgent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
       });
-      if (!res.ok) throw new Error('Polly TTS failed');
+      if (!res.ok) throw new Error(`Polly TTS failed: ${res.status}`);
 
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-
-      // Enable autoplay by user gesture context
-      audio.preload = 'auto';
+      const arrayBuffer = await res.arrayBuffer();
       
-      try {
-        await Promise.race([
-          new Promise((resolve, reject) => {
-            audio.onended = resolve;
-            audio.onerror = reject;
-            audio.play().catch(reject);
-          }),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Audio playback timeout')), 30000)
-          ),
-        ]);
-      } finally {
-        URL.revokeObjectURL(url);
+      // Use AudioContext that was created on user click
+      const ctx = audioCtxRef.current;
+      if (!ctx) {
+        throw new Error('AudioContext not initialized - please click to start first');
       }
+
+      // Resume context if suspended (browser policy)
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+
+      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      
+      return new Promise((resolve, reject) => {
+        source.onended = resolve;
+        source.onerror = reject;
+        source.start(0);
+      });
     } catch (err) {
       console.error('[speak]', err);
-      // Don't show error for autoplay issues - just continue silently
-      if (err.message.includes('not allowed') || err.message.includes('autoplay') || err.message.includes('play()')) {
-        console.log('[speak] Autoplay blocked - continuing anyway');
-        // Still set status back so UI updates
-      } else {
-        setErrorMsg(`Failed to play audio response: ${err.message}`);
+      // Don't fail the flow for audio issues
+      if (!err.message.includes('decode') && !err.message.includes('buffer')) {
+        setErrorMsg(`Audio error: ${err.message}`);
         setStatus(AGENT_STATUS.ERROR);
       }
     } finally {
@@ -121,7 +114,6 @@ export function useVoiceAgent() {
 
   /**
    * Send user input to the LLM and handle the response
-   * @param {string} userText - User's transcribed speech
    */
   async function sendToLLM(userText) {
     if (abortRef.current) return;
@@ -138,8 +130,7 @@ export function useVoiceAgent() {
       const result = await res.json();
 
       if (result.type === 'tool_call' && result.toolName === 'schedule_meeting') {
-        // ── Book the meeting ────────────────────────────────────────────────
-        // Stop listening immediately to prevent any in-progress utterances from firing
+        // Stop listening during booking
         listeningRef.current = false;
 
         const bookRes = await fetch('/api/create-event', {
@@ -164,7 +155,7 @@ export function useVoiceAgent() {
         return;
       }
 
-      // ── Regular text response ───────────────────────────────────────────
+      // Regular text response
       const replyText = result.text || '';
       addMessage('assistant', replyText);
       await speakText(replyText);
@@ -181,12 +172,10 @@ export function useVoiceAgent() {
 
   async function startDeepgram() {
     return new Promise((resolve, reject) => {
-      // Timeout after 10 seconds
       const timeout = setTimeout(() => {
-        reject(new Error('Deepgram connection timeout'));
+        reject(new Error('Deepgram connection timeout (10s)'));
       }, 10000);
 
-      // Fetch a short-lived key from our server
       fetch('/api/deepgram-token')
         .then(res => {
           if (!res.ok) throw new Error(`Failed to get Deepgram token: ${res.status}`);
@@ -195,11 +184,13 @@ export function useVoiceAgent() {
         .then(({ key }) => {
           const client = createClient(key);
 
+          // Use explicit encoding params for raw PCM audio
           const connection = client.listen.live({
             model: 'nova-3',
             language: 'en',
+            encoding: 'linear16',      // Raw PCM (not webm/opus)
+            sample_rate: '16000',      // 16kHz sample rate
             smart_format: true,
-            endpointing: 500,
             interim_results: true,
             utterance_end_ms: 1500,
             vad_events: true,
@@ -210,7 +201,7 @@ export function useVoiceAgent() {
           connection.on(LiveTranscriptionEvents.Open, () => {
             isOpen = true;
             clearTimeout(timeout);
-            console.log('[Deepgram] connection open - ready to receive audio');
+            console.log('[Deepgram] connection open - ready to receive PCM audio');
             resolve(connection);
           });
 
@@ -224,7 +215,6 @@ export function useVoiceAgent() {
             if (!text) return;
 
             if (!isFinal) {
-              // Show interim transcript live
               setLiveText(text);
               return;
             }
@@ -232,7 +222,6 @@ export function useVoiceAgent() {
             setLiveText('');
             console.log('[Deepgram] final transcript:', text);
 
-            // Act on final transcripts (user finished speaking)
             if (listeningRef.current) {
               listeningRef.current = false;
               sendToLLM(text);
@@ -247,7 +236,6 @@ export function useVoiceAgent() {
 
           connection.on(LiveTranscriptionEvents.Close, () => {
             console.log('[Deepgram] connection closed');
-            console.log('[Deepgram] Close event details:', { isOpen, hasConnection: !!dgRef.current });
             isOpen = false;
             dgRef.current = null;
           });
@@ -257,8 +245,8 @@ export function useVoiceAgent() {
           });
 
           dgRef.current = connection;
-          
-          // Keep connection alive with periodic keepalive
+
+          // Keepalive
           const keepalive = setInterval(() => {
             if (isOpen && dgRef.current) {
               try {
@@ -280,96 +268,97 @@ export function useVoiceAgent() {
 
   function stopListening() {
     listeningRef.current = false;
-    
-    // Close Deepgram connection
+
+    // Close Deepgram
     if (dgRef.current) {
       dgRef.current.finish();
       dgRef.current = null;
     }
-    
-    // Stop MediaRecorder
-    if (mediaRecorderRef.current) {
-      mediaRecorderRef.current.stop();
-      mediaRecorderRef.current = null;
+
+    // Stop ScriptProcessor
+    if (scriptProcessorRef.current) {
+      scriptProcessorRef.current.disconnect();
+      scriptProcessorRef.current = null;
     }
-    
-    // Stop microphone stream
+
+    // Stop analyser
+    if (analyserRef.current) {
+      analyserRef.current.disconnect();
+      analyserRef.current = null;
+    }
+
+    // Stop mic stream
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
-    
-    // Close AudioContext if exists
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close();
-      audioCtxRef.current = null;
-    }
-    
+
     console.log('[stopListening] Cleanup complete');
   }
 
+  /**
+   * Start microphone using ScriptProcessor for raw PCM audio
+   * This sends linear16 PCM @ 16kHz to Deepgram (required format)
+   */
   async function startMic() {
-    const stream = await navigator.mediaDevices.getUserMedia({ 
+    const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         sampleRate: 16000,
         channelCount: 1,
         echoCancellation: true,
         noiseSuppression: true,
-      } 
+      }
     });
     streamRef.current = stream;
 
-    // Use MediaRecorder API with multiple format fallbacks
-    const mimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg'];
-    let selectedMimeType = '';
-    
-    for (const mimeType of mimeTypes) {
-      if (MediaRecorder.isTypeSupported(mimeType)) {
-        selectedMimeType = mimeType;
-        break;
-      }
-    }
-    
-    if (!selectedMimeType) {
-      selectedMimeType = 'audio/webm'; // Fallback even if not supported
-    }
+    const audioContext = audioCtxRef.current;
+    const source = audioContext.createMediaStreamSource(stream);
 
-    const mediaRecorder = new MediaRecorder(stream, { mimeType: selectedMimeType });
-    mediaRecorderRef.current = mediaRecorder;
-
-    // Set up audio level monitoring for visualizer
-    const audioContext = new AudioContext();
+    // Set up analyser for visualizer
     const analyser = audioContext.createAnalyser();
-    const microphone = audioContext.createMediaStreamSource(stream);
-    microphone.connect(analyser);
     analyser.fftSize = 256;
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    analyserRef.current = analyser;
+    source.connect(analyser);
 
     const updateAudioLevel = () => {
+      if (!analyserRef.current || !listeningRef.current) return;
       analyser.getByteFrequencyData(dataArray);
       const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
       setAudioLevel(Math.min(100, (average / 255) * 100));
-      if (listeningRef.current) {
-        requestAnimationFrame(updateAudioLevel);
-      }
+      requestAnimationFrame(updateAudioLevel);
     };
     updateAudioLevel();
 
-    // Send audio chunks to Deepgram when available
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0 && dgRef.current && !isSpeakingRef.current) {
-        try {
-          dgRef.current.send(event.data);
-          console.log('[MediaRecorder] Sent audio chunk:', event.data.size, 'bytes, type:', selectedMimeType);
-        } catch (err) {
-          console.error('[MediaRecorder] Error sending audio:', err);
-        }
+    // ScriptProcessor for raw PCM audio (Deepgram requirement)
+    // 4096 buffer size = ~250ms chunks at 16kHz
+    const scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+    scriptProcessorRef.current = scriptProcessor;
+
+    scriptProcessor.onaudioprocess = (e) => {
+      if (!dgRef.current || dgRef.current.readyState !== 'open') return;
+      if (isSpeakingRef.current) return; // Don't send audio while speaking
+
+      const float32 = e.inputBuffer.getChannelData(0);
+      
+      // Convert Float32 (-1 to 1) to Int16 PCM (-32768 to 32767)
+      const int16 = new Int16Array(float32.length);
+      for (let i = 0; i < float32.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32[i]));
+        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+
+      try {
+        dgRef.current.send(int16.buffer);
+      } catch (err) {
+        console.error('[ScriptProcessor] Error sending audio:', err);
       }
     };
 
-    // Start recording with 250ms chunks (Deepgram's recommendation)
-    mediaRecorder.start(250);
-    console.log('[Mic] MediaRecorder started with mimeType:', selectedMimeType);
+    source.connect(scriptProcessor);
+    scriptProcessor.connect(audioContext.destination);
+
+    console.log('[Mic] ScriptProcessor started - sending PCM linear16 @ 16kHz');
   }
 
   // ── Public API ───────────────────────────────────────────────────────────
@@ -385,17 +374,31 @@ export function useVoiceAgent() {
     setStatus(AGENT_STATUS.CONNECTING);
 
     try {
+      // Create AudioContext on user click (preserves gesture context for audio playback)
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)({
+          sampleRate: 16000,
+        });
+      }
+      
+      // Resume context (may be suspended by browser)
+      if (audioCtxRef.current.state === 'suspended') {
+        await audioCtxRef.current.resume();
+      }
+
+      console.log('[startCall] AudioContext ready');
+
       // Start Deepgram first
       console.log('[startCall] Connecting to Deepgram...');
       await startDeepgram();
       console.log('[startCall] Deepgram connected');
-      
+
       // Then start mic
       console.log('[startCall] Starting microphone...');
       await startMic();
       console.log('[startCall] Mic started');
 
-      // Kick off the conversation with a greeting
+      // Kick off with greeting
       setStatus(AGENT_STATUS.GREETING);
       const greetRes = await fetch('/api/chat', {
         method: 'POST',
@@ -406,11 +409,11 @@ export function useVoiceAgent() {
       const greeting = greetData.text || "Hi! I'm your scheduling assistant. What's your name?";
 
       addMessage('assistant', greeting);
-      
-      // Play greeting (audio may be blocked, that's ok)
+
+      // Play greeting using AudioContext (not HTML5 Audio)
       console.log('[startCall] Playing greeting...');
-      speakText(greeting).catch(() => {
-        console.log('[startCall] Audio playback failed, continuing with text only');
+      speakText(greeting).catch((err) => {
+        console.log('[startCall] Audio playback error (continuing):', err.message);
       });
 
       if (!abortRef.current) {
@@ -420,7 +423,11 @@ export function useVoiceAgent() {
       }
     } catch (err) {
       console.error('[startCall]', err);
-      setErrorMsg(err.message.includes('Permission') ? 'Microphone access was denied. Please allow mic access and try again.' : err.message);
+      setErrorMsg(
+        err.message.includes('Permission') || err.message.includes('denied')
+          ? 'Microphone access was denied. Please allow mic access and try again.'
+          : err.message
+      );
       setStatus(AGENT_STATUS.ERROR);
       stopListening();
     }
@@ -438,6 +445,10 @@ export function useVoiceAgent() {
     return () => {
       abortRef.current = true;
       stopListening();
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close();
+        audioCtxRef.current = null;
+      }
     };
   }, []);
 
